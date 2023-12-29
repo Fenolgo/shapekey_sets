@@ -1,11 +1,16 @@
+from typing import Set, Type
 import bpy
+import functools
+
+from bpy.types import Context, Event, Menu, PropertyGroup, AddonPreferences, Operator, UIList, Panel, Region, Scene
+from bpy.props import StringProperty, BoolProperty, CollectionProperty, IntProperty, EnumProperty
 
 bl_info = {
     "name": "Shapekey Sets",
     "author": "Fenolgo",
     "description": "Automatically adds a list of empty shape keys to selected meshes.",
     "blender": (2, 80, 0),
-    "version": (0, 0, 1),
+    "version": (1, 0, 0),
     "location": "Properties > Data > Shapekey Sets",
     "warning": "",
     "category": "Mesh",
@@ -17,20 +22,22 @@ bl_info = {
 # -----------------------------------------------------------------------------
 
 
-class Shapekey(bpy.types.PropertyGroup):
-    name: bpy.props.StringProperty()
+class Shapekey(PropertyGroup):
+    name: StringProperty()
+    enabled: BoolProperty(default=True)
 
 
-class ShapekeySet(bpy.types.PropertyGroup):
-    name: bpy.props.StringProperty()
-    shapekeys: bpy.props.CollectionProperty(type=Shapekey)
+class ShapekeySet(PropertyGroup):
+    name: StringProperty()
+    shapekeys: CollectionProperty(type=Shapekey)
+    active_shapekey_index: IntProperty()
 
 
-class ShapekeySetsPreferences(bpy.types.AddonPreferences):
+class ShapekeySetsPreferences(AddonPreferences):
     bl_idname = __package__
 
-    shapekey_sets: bpy.props.CollectionProperty(type=ShapekeySet)
-    active_shapekey_set_index: bpy.props.IntProperty()
+    shapekey_sets: CollectionProperty(type=ShapekeySet)
+    active_shapekey_set_index: IntProperty()
 
     def register_default_sets(self):
         shapekey_set_prefs = self.shapekey_sets
@@ -110,83 +117,161 @@ default_shapekeys = [
 #   Operators
 # -----------------------------------------------------------------------------
 
+class SHAPEKEY_SETS_OT_reset(Operator):
+    bl_label = "Restore Default Shapekey Sets"
+    bl_idname = "object.shapekey_set_reset"
+    bl_options = {'REGISTER', 'UNDO'}
 
-class SHAPEKEY_SETS_OT_add(bpy.types.Operator):
-    bl_label = "Apply Shapekey Set"
-    bl_idname = "object.shapekey_set_add"
-
-    def execute(self, context):
-        for object in context.selected_objects:
-            if object.type == 'MESH':
-                for shapekey_set in context.scene.shapekey_sets:
-                    for shapekey in shapekey_set.shapekeys:
-                        name = shapekey.name
-                        if (object.data.shape_keys is None
-                                or not name in object.data.shape_keys.key_blocks):
-                            object.shape_key_add(name=name)
+    def execute(self, context: Context) -> Set[str] | Set[int]:
+        initialize(context.region, force=True)
         return {"FINISHED"}
 
 
-class SHAPEKEY_SETS_OT_ui_actions(bpy.types.Operator):
-    """Move items up and down, add and remove"""
-    bl_idname = "shapekey_sets.list_action"
+class SHAPEKEY_SETS_OT_add(Operator):
+    bl_label = "Apply Shapekey Set"
+    bl_idname = "object.shapekey_set_add"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context: Context) -> Set[str] | Set[int]:
+        scene = context.scene
+
+        if len(scene.shapekey_sets) > 0:
+            active_shapekey_set = scene.shapekey_sets[scene.active_shapekey_set_index]
+            for object in context.selected_objects:
+                if object.type == 'MESH':
+                    for shapekey in active_shapekey_set.shapekeys:
+                        if shapekey.enabled:
+                            name = shapekey.name
+                            if (object.data.shape_keys is None
+                                    or not name in object.data.shape_keys.key_blocks):
+                                object.shape_key_add(name=name)
+        return {"FINISHED"}
+
+
+class SHAPEKEY_SETS_OT_base_list_actions(Operator):
+    """
+    Move items up and down, add, remove, dedupe, and clear
+    """
+    bl_idname = "shapekey_sets.base_list_action"
     bl_label = "List Actions"
     bl_description = "Move items up and down, add and remove"
-    bl_options = {'REGISTER'}
+    bl_options = {'INTERNAL', 'UNDO'}
 
-    action: bpy.props.EnumProperty(
+    action: EnumProperty(
         items=(
             ('UP', "Up", ""),
             ('DOWN', "Down", ""),
             ('REMOVE', "Remove", ""),
-            ('ADD', "Add", "")))
+            ('ADD', "Add", ""),
+            ('CLEAR', "CLEAR", ""),
+            ('DEDUPE', "DEDUPE", "")))
 
-    def random_color(self):
-        from mathutils import Color
-        from random import random
-        return Color((random(), random(), random()))
+    def find_duplicates(self, items):
+        """
+        Find all duplicates by name
+        """
+        name_lookup = {}
+        for c, i in enumerate(items):
+            name_lookup.setdefault(i.name, []).append(c)
+        duplicates = set()
+        for name, indices in name_lookup.items():
+            for i in indices[1:]:
+                duplicates.add(i)
+        return sorted(list(duplicates))
 
-    def invoke(self, context, event):
-        scene = context.scene
-        index = scene.active_shapekey_set_index
+    def list_actions(self, root_obj: object, list_name: str, index_name: str):
+        """
+        Generic manipulations for a UI list. Subclasses are responsible for
+        providing a parent object for the list through their invoke()
+        implementation, along with keys for accessing the parent object's
+        list and index properties.
+
+        :param root_obj: The parent object where the list is stored
+        :param list_name: The name of the list property
+        :param index_name: The name of the active index property
+        """
+        obj = root_obj
+        list = getattr(obj, list_name)
+        index = getattr(obj, index_name)
 
         try:
-            item = scene.shapekey_sets[index]
+            item = list[index]
         except IndexError:
             pass
         else:
-            if self.action == 'DOWN' and index < len(scene.shapekey_sets) - 1:
-                scene.shapekey_sets.move(index, index+1)
-                scene.active_shapekey_set_index += 1
+            if self.action == 'DOWN' and index < len(list)-1:
+                list.move(index, index+1)
+                setattr(obj, index_name, index+1)
                 info = 'Item "%s" moved to position %d' % (
-                    item.name, scene.active_shapekey_set_index + 1)
-                self.report({'INFO'}, info)
+                    item.name, index + 1)
+                return info
 
             elif self.action == 'UP' and index >= 1:
-                scene.shapekey_sets.move(index, index-1)
-                scene.active_shapekey_set_index -= 1
+                list.move(index, index-1)
+                setattr(obj, index_name, index-1)
                 info = 'Item "%s" moved to position %d' % (
-                    item.name, scene.active_shapekey_set_index + 1)
-                self.report({'INFO'}, info)
+                    item.name, index + 1)
+                return info
 
             elif self.action == 'REMOVE':
-                item = scene.shapekey_sets[scene.active_shapekey_set_index]
-                scene.shapekey_sets.remove(index)
+                item = list[index]
+                list.remove(index)
                 info = 'Item %s removed from scene' % (item)
-                if scene.active_shapekey_set_index == 0:
-                    scene.active_shapekey_set_index = 0
-                else:
-                    scene.active_shapekey_set_index -= 1
-                self.report({'INFO'}, info)
+                if index > 0:
+                    setattr(obj, index_name, index-1)
+                return info
 
         if self.action == 'ADD':
-            item = scene.shapekey_sets.add()
-            item.id = len(scene.shapekey_sets)
-            item.name = self.random_color().r
-            scene.active_shapekey_set_index = (
-                len(scene.shapekey_sets)-1)
+            item = list.add()
+            item.id = len(list)
+            item.name = "New Item"
+            setattr(obj, index_name, len(list)-1)
             info = '%s added to list' % (item.name)
-            self.report({'INFO'}, info)
+            return info
+
+        elif self.action == 'CLEAR':
+            if bool(list):
+                list.clear()
+                setattr(obj, index_name, 0)
+                return "All items removed"
+            else:
+                return "Nothing to remove"
+
+        elif self.action == 'DEDUPE':
+            removed_items = []
+            # Reverse the list before removing the items
+            for i in self.find_duplicates(list)[::-1]:
+                list.remove(i)
+                removed_items.append(i)
+            if removed_items:
+                setattr(obj, index_name, len(list)-1)
+                info = ', '.join(map(str, removed_items))
+                return "Removed indices: %s" % (info)
+            else:
+                return "No duplicates"
+
+
+class SHAPEKEY_SETS_OT_data_set_list_actions(SHAPEKEY_SETS_OT_base_list_actions):
+    bl_idname = "shapekey_sets.set_list_action"
+
+    def invoke(self, context: Context, event: Event) -> Set[str] | Set[int]:
+        self.list_actions(context.scene, "shapekey_sets",
+                          "active_shapekey_set_index")
+        return {"FINISHED"}
+
+
+class SHAPEKEY_SETS_OT_data_key_list_actions(SHAPEKEY_SETS_OT_base_list_actions):
+    bl_idname = "shapekey_sets.key_list_action"
+
+    @classmethod
+    def poll(cls, context):
+        return (len(context.scene.shapekey_sets) > 0 and
+                context.scene.shapekey_sets[context.scene.active_shapekey_set_index] is not None)
+
+    def invoke(self, context: Context, event: Event) -> Set[str] | Set[int]:
+        active_set = context.scene.shapekey_sets[context.scene.active_shapekey_set_index]
+
+        self.list_actions(active_set, "shapekeys", "active_shapekey_index")
         return {"FINISHED"}
 
 
@@ -194,54 +279,143 @@ class SHAPEKEY_SETS_OT_ui_actions(bpy.types.Operator):
 #   UI Components
 # -----------------------------------------------------------------------------
 
-class SHAPEKEY_SETS_UL_matslots_example(bpy.types.UIList):
-    # The draw_item function is called for each item of the collection that is visible in the list.
-    #   data is the RNA object containing the collection,
-    #   item is the current drawn item of the collection,
-    #   icon is the "computed" icon for the item (as an integer, because some objects like materials or textures
-    #   have custom icons ID, which are not available as enum items).
-    #   active_data is the RNA object containing the active property for the collection (i.e. integer pointing to the
-    #   active item of the collection).
-    #   active_propname is the name of the active property (use 'getattr(active_data, active_propname)').
-    #   index is index of the current item in the collection.
-    #   flt_flag is the result of the filtering process for this item.
-    #   Note: as index and flt_flag are optional arguments, you do not have to use/declare them here if you don't
-    #         need them.
-    def draw_item(self, context, layout, data, item, icon, active_data, active_propname):
-        ob = data
-        slot = item
-        ma = slot.material
-        # draw_item must handle the three layout types... Usually 'DEFAULT' and 'COMPACT' can share the same code.
+class SHAPEKEY_SETS_MT_data_set_list_context_menu(Menu):
+    bl_label = "Set List Specials"
+
+    def draw(self, context):
+        layout = self.layout
+
+        layout.operator(SHAPEKEY_SETS_OT_data_set_list_actions.bl_idname,
+                        icon="X", text="Clear List").action = 'CLEAR'
+        layout.operator(SHAPEKEY_SETS_OT_reset.bl_idname,
+                        icon="RECOVER_LAST", text="Restore Defaults")
+
+
+class SHAPEKEY_SETS_MT_data_key_list_context_menu(Menu):
+    bl_label = "Key List Specials"
+
+    def draw(self, context):
+        layout = self.layout
+
+        layout.operator(SHAPEKEY_SETS_OT_data_key_list_actions.bl_idname,
+                        icon="X", text="Clear List").action = 'CLEAR'
+        layout.operator(SHAPEKEY_SETS_OT_data_key_list_actions.bl_idname,
+                        icon="GHOST_ENABLED", text="Delete Duplicates").action = 'DEDUPE'
+
+
+class SHAPEKEY_SETS_UL_set_list_items(UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         if self.layout_type in {'DEFAULT', 'COMPACT'}:
-            # You should always start your row layout by a label (icon + text), or a non-embossed text field,
-            # this will also make the row easily selectable in the list! The later also enables ctrl-click rename.
-            # We use icon_value of label, as our given icon is an integer value, not an enum ID.
-            # Note "data" names should never be translated!
-            if ma:
-                layout.prop(ma, "name", text="", emboss=False, icon_value=icon)
-            else:
-                layout.label(text="", translate=False, icon_value=icon)
-            # And now we can add other UI stuff...
-            # Here, we add nodes info if this material uses (old!) shading nodes.
-            # if ma and not context.scene.render.use_shading_nodes:
-            #     manode = ma.active_node_material
-            #     if manode:
-            #         # The static method UILayout.icon returns the integer value of the icon ID "computed" for the given
-            #         # RNA object.
-            #         layout.label(text="Node %s" % manode.name,
-            #                      translate=False, icon_value=layout.icon(manode))
-            #     elif ma.use_nodes:
-            #         layout.label(text="Node <none>", translate=False)
-            #     else:
-            #         layout.label(text="")
-        # 'GRID' layout type should be as compact as possible (typically a single icon!).
-        elif self.layout_type in {'GRID'}:
+            row = layout.row()
+            row.prop(item, "name", text="", emboss=False, icon="GROUP")
+        elif self.layout_type == 'GRID':
             layout.alignment = 'CENTER'
             layout.label(text="", icon_value=icon)
 
 
-class SHAPEKEY_SETS_PT_ui(bpy.types.Panel):
-    bl_label = __package__
+class SHAPEKEY_SETS_UL_key_list_items(UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        if self.layout_type in {'DEFAULT', 'COMPACT'}:
+            row = layout.row()
+            row.enabled = item.enabled
+
+            row.prop(item, "name", text="", emboss=False, icon='SHAPEKEY_DATA')
+
+            icon = 'CHECKBOX_HLT' if item.enabled else 'CHECKBOX_DEHLT'
+            layout.prop(item, "enabled", text="", icon=icon, emboss=False)
+        elif self.layout_type == 'GRID':
+            layout.alignment = 'CENTER'
+            layout.label(text="", icon_value=icon)
+
+
+class SHAPEKEY_SETS_PT_base_ui():
+    """
+    Core UI for manipulating shapekey sets. Subclasses are responsible for
+    providing a parent object for addon properties through their draw()
+    implementation, along with UI Element implementations that modify the
+    same parent object.
+    Modelled after https://github.com/blender/blender/blob/9c0bffcc89f174f160805de042b00ae7c201c40b/scripts/startup/bl_ui/properties_data_mesh.py#L290
+
+    :param root_obj: The parent object where the list is stored
+    :param set_list_actions_class: Operator class that handles set list manipulation
+    :param set_context_menu_class: Menu class that draw special actions for the set list
+    :param key_list_actions_class: Operator class that handles key list manipulation
+    :param key_context_menu_class: Menu class that draw special actions for the key list
+    """
+
+    def _draw(self, context, root_obj, set_list_actions_class: Type, set_context_menu_class: Type, key_list_actions_class: Type, key_context_menu_class: Type):
+        layout = self.layout
+
+        # Sets List
+        rows = 3
+        if len(root_obj.shapekey_sets) > 0:
+            rows = 5
+        row = layout.row()
+
+        row.template_list(SHAPEKEY_SETS_UL_set_list_items.__name__, "shapekey_sets_list",
+                          root_obj, "shapekey_sets", root_obj, "active_shapekey_set_index", rows=rows)
+
+        col = row.column(align=True)
+
+        col.operator(set_list_actions_class.bl_idname,
+                     icon='ADD', text="").action = 'ADD'
+        col.operator(set_list_actions_class.bl_idname,
+                     icon='REMOVE', text="").action = 'REMOVE'
+
+        col.separator()
+
+        col.menu(set_context_menu_class.__name__,
+                 icon='DOWNARROW_HLT', text="")
+
+        if len(root_obj.shapekey_sets) > 0:
+            col.separator()
+
+            col.operator(set_list_actions_class.bl_idname,
+                         icon='TRIA_UP', text="").action = 'UP'
+
+            col.operator(set_list_actions_class.bl_idname,
+                         icon='TRIA_DOWN', text="").action = 'DOWN'
+
+        # Keys List
+        if len(root_obj.shapekey_sets) > 0:
+            active_shapekey_set = root_obj.shapekey_sets[root_obj.active_shapekey_set_index]
+
+            row = layout.row()
+
+            rows = 3
+            if len(active_shapekey_set.shapekeys) > 0:
+                rows = 5
+            row = layout.row()
+
+            row.template_list(SHAPEKEY_SETS_UL_key_list_items.__name__, "shapekeys_list",
+                              active_shapekey_set, "shapekeys", active_shapekey_set, "active_shapekey_index", rows=rows)
+
+            col = row.column(align=True)
+
+            col.operator(key_list_actions_class.bl_idname,
+                         icon='ADD', text="").action = 'ADD'
+            col.operator(key_list_actions_class.bl_idname,
+                         icon='REMOVE', text="").action = 'REMOVE'
+
+            col.separator()
+
+            col.menu(key_context_menu_class.__name__,
+                     icon='DOWNARROW_HLT', text="")
+
+            if len(active_shapekey_set.shapekeys) > 0:
+                col.separator()
+
+                col.operator(key_list_actions_class.bl_idname,
+                             icon='TRIA_UP', text="").action = 'UP'
+                col.operator(key_list_actions_class.bl_idname,
+                             icon='TRIA_DOWN', text="").action = 'DOWN'
+
+                row = layout.row(align=True)
+                row.operator(SHAPEKEY_SETS_OT_add.bl_idname)
+
+
+class SHAPEKEY_SETS_PT_data_ui(SHAPEKEY_SETS_PT_base_ui, Panel):
+    bl_label = "Shapekey Sets"
     bl_udname = "ShapekeySetsUI"
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
@@ -250,18 +424,11 @@ class SHAPEKEY_SETS_PT_ui(bpy.types.Panel):
     def draw(self, context):
         # Initialize Scene state from user prefs on first draw
         if not context.scene.is_shapekey_sets_initialized:
-            bpy.app.timers.register(initialize)
+            bpy.app.timers.register(
+                functools.partial(initialize, context.region))
 
-        layout = self.layout
-        scene = context.scene
-
-        row = layout.row()
-        row.template_list("UI_UL_list", "shapekey_sets_ui_list",
-                          scene, "shapekey_sets", scene, "active_shapekey_set_index")
-
-        row = layout.row()
-        row.operator("object.shapekey_set_add")
-
+        self._draw(context, context.scene, SHAPEKEY_SETS_OT_data_set_list_actions,
+                   SHAPEKEY_SETS_MT_data_set_list_context_menu, SHAPEKEY_SETS_OT_data_key_list_actions, SHAPEKEY_SETS_MT_data_key_list_context_menu)
 
 # -----------------------------------------------------------------------------
 #   Setup
@@ -269,24 +436,35 @@ class SHAPEKEY_SETS_PT_ui(bpy.types.Panel):
 
 
 classes = (
-    SHAPEKEY_SETS_OT_ui_actions,
-    SHAPEKEY_SETS_UL_matslots_example,
     Shapekey,
     ShapekeySet,
-    SHAPEKEY_SETS_PT_ui,
-    SHAPEKEY_SETS_OT_add,
     ShapekeySetsPreferences,
+    SHAPEKEY_SETS_OT_reset,
+    SHAPEKEY_SETS_OT_add,
+    SHAPEKEY_SETS_OT_base_list_actions,
+    SHAPEKEY_SETS_OT_data_set_list_actions,
+    SHAPEKEY_SETS_OT_data_key_list_actions,
+    SHAPEKEY_SETS_MT_data_set_list_context_menu,
+    SHAPEKEY_SETS_MT_data_key_list_context_menu,
+    SHAPEKEY_SETS_UL_set_list_items,
+    SHAPEKEY_SETS_UL_key_list_items,
+    SHAPEKEY_SETS_PT_data_ui,
 )
 
 
-def initialize():
-    ''' Executes once immediately after the first UI draw. This is the most
-        reliable way I've found to access to the Scene for initialization.
+def initialize(region: Region, force: bool = False):
+    '''
+    Executes once immediately after the first UI draw. This is the most
+    reliable way I've found to access to the Scene for initilzation when
+    the addon loads. Can also be run to reset defaults with force=True
+
+    :param region: The region where the addon's primary UIList is located
+    :param force: When True resets all addon state to user's preferences
     '''
     scene = bpy.context.scene
     prefs = bpy.context.preferences.addons[__package__].preferences
 
-    if (scene.is_shapekey_sets_initialized == False):
+    if (scene.is_shapekey_sets_initialized == False or force == True):
         scene.shapekey_sets.clear()
         # Copy premade sets out of prefs and into the scene
         for pref_shapekey_set in prefs.shapekey_sets:
@@ -295,19 +473,24 @@ def initialize():
                 shapekey_set[k] = v
 
     scene.is_shapekey_sets_initialized = True
-    bpy.app.timers.unregister(initialize)
+
+    # Force the UI to immediately draw the newly registered sets
+    region.tag_redraw()
+
+    # Cancels the timer
+    return None
 
 
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
 
-    scene = bpy.types.Scene
+    scene = Scene
 
-    scene.shapekey_sets = bpy.props.CollectionProperty(
+    scene.shapekey_sets = CollectionProperty(
         type=ShapekeySet)
-    scene.active_shapekey_set_index = bpy.props.IntProperty()
-    scene.is_shapekey_sets_initialized = bpy.props.BoolProperty(
+    scene.active_shapekey_set_index = IntProperty()
+    scene.is_shapekey_sets_initialized = BoolProperty(
         default=False)
 
     prefs = bpy.context.preferences.addons[__package__].preferences
@@ -315,7 +498,7 @@ def register():
 
 
 def unregister():
-    scene = bpy.types.Scene
+    scene = Scene
 
     del scene.shapekey_sets
     del scene.active_shapekey_set_index
