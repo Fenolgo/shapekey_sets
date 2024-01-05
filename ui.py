@@ -159,8 +159,9 @@ class SHAPEKEY_SETS_OT_prefs_key_list_actions(SHAPEKEY_SETS_OT_base_list_actions
 
     @classmethod
     def poll(cls, context):
-        return (len(context.scene.shapekey_sets) > 0 and
-                context.scene.shapekey_sets[context.scene.active_shapekey_set_index] is not None)
+        prefs = bpy.context.preferences.addons[__package__].preferences
+        return (len(prefs.shapekey_sets) > 0 and
+                prefs.shapekey_sets[prefs.active_shapekey_set_index] is not None)
 
     def invoke(self, context: Context, event: Event) -> Set[str] | Set[int]:
         prefs = bpy.context.preferences.addons[__package__].preferences
