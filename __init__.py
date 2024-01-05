@@ -26,7 +26,7 @@ bl_info = {
     "author": "Fenolgo",
     "description": "Automatically adds a list of empty shape keys to selected meshes.",
     "blender": (2, 80, 0),
-    "version": (1, 1, 0),
+    "version": (1, 1, 1),
     "location": "Properties > Data > Shapekey Sets",
     "warning": "",
     "category": "Mesh",
@@ -54,6 +54,7 @@ class ShapekeySetsPreferences(AddonPreferences, SHAPEKEY_SETS_PT_base_ui):
 
     shapekey_sets: CollectionProperty(type=ShapekeySet)
     active_shapekey_set_index: IntProperty()
+    is_initialized: BoolProperty(default=False)
 
     def register_default_sets(self):
         shapekey_set_prefs = self.shapekey_sets
@@ -114,7 +115,9 @@ def register():
         default=False)
 
     prefs = bpy.context.preferences.addons[__package__].preferences
-    prefs.register_default_sets()
+    if not prefs.is_initialized:
+        prefs.register_default_sets()
+        prefs.is_initialized = True
 
 
 def unregister():
