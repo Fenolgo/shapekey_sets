@@ -26,7 +26,7 @@ bl_info = {
     "author": "Fenolgo",
     "description": "Automatically adds a list of empty shape keys to selected meshes.",
     "blender": (2, 80, 0),
-    "version": (1, 1, 1),
+    "version": (1, 1, 2),
     "location": "Properties > Data > Shapekey Sets",
     "warning": "",
     "category": "Mesh",
