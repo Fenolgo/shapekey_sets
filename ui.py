@@ -16,7 +16,7 @@ from .util import initialize
 
 class SHAPEKEY_SETS_OT_base_list_actions(Operator):
     """
-    Move items up and down, add, remove, dedupe, and clear
+    Move list items up and down, add, remove, dedupe, and clear
     """
     bl_idname = "shapekey_sets.base_list_action"
     bl_label = "List Actions"
@@ -47,10 +47,9 @@ class SHAPEKEY_SETS_OT_base_list_actions(Operator):
 
     def list_actions(self, root_obj: object, list_name: str, index_name: str):
         """
-        Generic manipulations for a UI list. Subclasses are responsible for
-        providing a parent object for the list through their invoke()
-        implementation, along with keys for accessing the parent object's
-        list and index properties.
+        Generic manipulations for a UI list. Subclasses must provide access 
+        to the list's parent object through their invoke() implementation, 
+        along with names for the list and index properties.
 
         :param root_obj: The parent object where the list is stored
         :param list_name: The name of the list property
@@ -117,8 +116,8 @@ class SHAPEKEY_SETS_OT_base_list_actions(Operator):
                 return "No duplicates"
 
 
-# Implementations for each kind of list object, because passing an object as
-# an operator argument seems impossible
+# Implementations for each kind of list object, because passing a generic parent 
+# object through an operator argument seems impossible
 
 class SHAPEKEY_SETS_OT_data_set_list_actions(SHAPEKEY_SETS_OT_base_list_actions):
     bl_idname = "shapekey_sets.data_set_list_action"
@@ -175,8 +174,7 @@ class SHAPEKEY_SETS_OT_prefs_key_list_actions(SHAPEKEY_SETS_OT_base_list_actions
 #   UI Components
 # -----------------------------------------------------------------------------
 
-# Special actions for each type of list, which are compartmentalized in a
-# separate dropdown menu.
+# Special actions for each type of list, which are displayed in a dropdown menu.
 
 class SHAPEKEY_SETS_MT_data_set_list_context_menu(Menu):
     bl_label = "Set List Specials"
@@ -225,7 +223,7 @@ class SHAPEKEY_SETS_MT_prefs_key_list_context_menu(Menu):
         layout.operator(SHAPEKEY_SETS_OT_prefs_key_list_actions.bl_idname,
                         icon="GHOST_ENABLED", text="Delete Duplicates").action = 'DEDUPE'
 
-# Definitions for how each individual set and shapekey is displayed in a list
+# Rendering rules for individual set and shapekey items
 
 
 class SHAPEKEY_SETS_UL_set_list_items(UIList):
@@ -255,9 +253,9 @@ class SHAPEKEY_SETS_UL_key_list_items(UIList):
 
 class SHAPEKEY_SETS_PT_base_ui():
     """
-    Core UI for manipulating shapekey sets. Subclasses are responsible for
-    providing a parent object for addon properties through their draw()
-    implementation, along with UI Element implementations that modify the
+    Core UI for manipulating shapekey sets. Subclasses must provide access 
+    to the addon properties' parent object through their draw()
+    implementation, along with UI Element implementations that match the
     same parent object.
     Modelled after https://github.com/blender/blender/blob/9c0bffcc89f174f160805de042b00ae7c201c40b/scripts/startup/bl_ui/properties_data_mesh.py#L290
 
