@@ -5,9 +5,8 @@ from bpy.types import Region
 def initialize(region: Region, force: bool = False):
     """
     Executes once immediately after the first UI draw. This is the most
-    reliable way I've found to access to the Scene for initilzation when
-    the addon loads. Can also be run with force=True at any time to
-    reset defaults.
+    reliable way I've found to initialize Scene state when the addon loads. 
+    Can also be run with force=True at any time to reset defaults.
 
     :param region: The region where the addon's primary UIList is located
     :param force: When True resets all addon state to user's preferences
